@@ -1,53 +1,49 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 
+// IMPORTANT: You must copy the new `TicTacToe.js` file into this `functions`
+// directory for this code to work. This ensures the server and client
+// use the exact same game rules.
+const { TicTacToe } = require("./TicTacToe.js");
+
 admin.initializeApp();
 const db = admin.firestore();
 
 /**
- * Creates a new 3x3 game document in Firestore.
- * User must be authenticated.
+ * Creates a new game document in Firestore.
  */
 exports.createGame = functions.https.onCall(async (data, context) => {
-  // SECURE: Re-enabled authentication check.
-  // if (!context.auth) {
-  //   throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
-  // }
-  
-  // SECURE: Get the userId from the authentication context, not from the client data.
-  const { userId } = data; // Changed for debugging
-  const gameRef = db.collection("games").doc();
-  const gameId = gameRef.id;
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'You must be logged in to create a game.');
+  }
 
-  await gameRef.set({
-    gameId,
-    playerX: userId,
+  // Use our universal class to get a fresh, reliable game state.
+  const gameEngine = new TicTacToe();
+  const initialState = gameEngine.getState();
+
+  // Add player and server timestamp information.
+  const gameData = {
+    ...initialState,
+    playerX: context.auth.uid,
     playerO: null,
-    board: Array(9).fill(null),
-    turn: "X",
-    status: "waiting",
-    winner: null,
+    status: "waiting", // Overwrite initial status
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-  });
+  };
 
-  return { gameId };
+  const gameRef = await db.collection("games").add(gameData);
+  return { gameId: gameRef.id };
 });
 
 /**
  * Allows a second player to join an existing game.
- * User must be authenticated.
  */
 exports.joinGame = functions.https.onCall(async (data, context) => {
-  // if (!context.auth) {
-  //   throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
-  // }
-
-  const { gameId, userId } = data; // Changed for debugging
-
-  if (!gameId) {
-    throw new functions.https.HttpsError('invalid-argument', 'The function must provide a "gameId".');
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'You must be logged in to join a game.');
   }
+
+  const { gameId } = data;
+  const userId = context.auth.uid;
 
   const gameRef = db.collection("games").doc(gameId);
   const gameDoc = await gameRef.get();
@@ -57,132 +53,106 @@ exports.joinGame = functions.https.onCall(async (data, context) => {
   }
 
   const gameData = gameDoc.data();
-
   if (gameData.playerX === userId) {
-      throw new functions.https.HttpsError("failed-precondition", "You can't join your own game.");
+    throw new functions.https.HttpsError("failed-precondition", "You can't join your own game.");
   }
   if (gameData.playerO !== null) {
     throw new functions.https.HttpsError("failed-precondition", "This game is already full.");
   }
 
+  // The game is now active.
   await gameRef.update({
     playerO: userId,
     status: "active",
-    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
   });
 
   return { status: "success" };
 });
 
+
 /**
- * Processes a player's move.
- * User must be authenticated.
+ * The new "Referee" function. It's a trigger that runs whenever a game
+ * document is updated, validating the `lastMoveIntent`.
  */
-exports.makeMove = functions.https.onCall(async (data, context) => {
-  // if (!context.auth) {
-  //   throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
-  // }
+exports.processMoveIntent = functions.firestore
+  .document("games/{gameId}")
+  .onUpdate(async (change, context) => {
+    const beforeState = change.before.data();
+    const afterState = change.after.data();
 
-  const { gameId, index, userId } = data; // Changed for debugging
-  
-  if (!gameId || index === undefined) {
-    throw new functions.https.HttpsError('invalid-argument', 'The function must provide "gameId" and "index".');
-  }
-
-  const gameRef = db.collection("games").doc(gameId);
-
-  await db.runTransaction(async (transaction) => {
-    const gameDoc = await transaction.get(gameRef);
-
-    if (!gameDoc.exists) {
-      throw new functions.https.HttpsError("not-found", "Game not found.");
+    // Check if a new move intent was just submitted.
+    if (!afterState.lastMoveIntent || afterState.lastMoveIntent === beforeState.lastMoveIntent) {
+      return null; // No new move to process.
     }
 
-    const game = gameDoc.data();
-
-    if (game.status !== "active") {
-      throw new functions.https.HttpsError("failed-precondition", "This game is not active.");
-    }
-    if ((game.turn === "X" && game.playerX !== userId) || (game.turn === "O" && game.playerO !== userId)) {
-      throw new functions.https.HttpsError("permission-denied", "It's not your turn.");
-    }
-    if (game.board[index] !== null) {
-      throw new functions.https.HttpsError("failed-precondition", "This position is already taken.");
-    }
-
-    const newBoard = [...game.board];
-    newBoard[index] = game.turn;
-
-    const winner = checkWinner(newBoard);
-    const isDraw = newBoard.every(cell => cell !== null) && !winner;
+    const { userId, position } = afterState.lastMoveIntent;
+    const { row, col } = position;
     
-    let newStatus = "active";
-    if (winner || isDraw) {
-        newStatus = "finished";
+    // --- SERVER-SIDE VALIDATION ---
+    // Create a game instance based on the LAST known official state.
+    const game = new TicTacToe();
+    game.hydrate(beforeState); // Use a helper to load state into the class
+
+    // Check if the correct user is making a move.
+    const expectedPlayerId = game.currentPlayer === 'X' ? game.state.playerX : game.state.playerO;
+    if (userId !== expectedPlayerId) {
+       console.error("Validation failed: User played out of turn.");
+       return null;
     }
 
-    const nextTurn = game.turn === "X" ? "O" : "X";
+    // --- EXECUTE THE MOVE USING THE TRUSTED GAME ENGINE ---
+    const wasMoveSuccessful = game.makeMove(row, col);
 
-    transaction.update(gameRef, {
-      board: newBoard,
-      turn: nextTurn,
-      status: newStatus,
-      winner: winner || (isDraw ? 'draw' : null),
-      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    if (wasMoveSuccessful) {
+      // Get the new, authoritative state from our trusted class.
+      const newAuthoritativeState = game.getState();
+
+      // If the game just ended, update the status.
+      if (newAuthoritativeState.isGameOver) {
+          newAuthoritativeState.status = "finished";
+      }
+
+      // Write the official new state back to the database.
+      return change.after.ref.update({
+        ...newAuthoritativeState,
+        lastMoveIntent: null // Clear the intent after processing.
+      });
+    } else {
+      console.error("Validation failed: Invalid move attempted.");
+      // Optional: Revert the change if needed, but clearing the intent is often enough.
+      return change.after.ref.update({ lastMoveIntent: null });
+    }
   });
 
-  return { status: "success" };
-});
 
 /**
- * Resets a finished game.
- * User must be authenticated.
+ * Resets a finished game. Only the host (Player X) can do this.
  */
 exports.resetGame = functions.https.onCall(async (data, context) => {
-    // if (!context.auth) {
-    //     throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
-    // }
+    if (!context.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'You must be logged in.');
+    }
 
-    const { gameId, userId } = data; // Changed for debugging
-
+    const { gameId } = data;
+    const userId = context.auth.uid;
     const gameRef = db.collection("games").doc(gameId);
-
     const gameDoc = await gameRef.get();
+
     if (!gameDoc.exists) {
         throw new functions.https.HttpsError("not-found", "Game not found.");
     }
-
-    const game = gameDoc.data();
-
-    if (game.playerX !== userId) {
+    if (gameDoc.data().playerX !== userId) {
         throw new functions.https.HttpsError("permission-denied", "Only the host can reset the game.");
     }
-    
+
+    // Use the class to get a clean state.
+    const game = new TicTacToe();
+    const freshState = game.getState();
+
     await gameRef.update({
-        board: Array(9).fill(null),
-        turn: "X",
-        status: "active",
-        winner: null,
-        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+        ...freshState,
+        status: 'active', // Set status back to active
     });
 
     return { status: "success" };
 });
-
-
-function checkWinner(board) {
-  const lines = [
-    [0, 1, 2], [3, 4, 5], [6, 7, 8],
-    [0, 3, 6], [1, 4, 7], [2, 5, 8],
-    [0, 4, 8], [2, 4, 6],
-  ];
-  for (let i = 0; i < lines.length; i++) {
-    const [a, b, c] = lines[i];
-    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
-      return board[a];
-    }
-  }
-  return null;
-}
-

@@ -11,20 +11,10 @@ import { Game } from './components/Game';
 // --- Firebase Config ---
 // This configuration remains the same.
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-   apiKey: "AIzaSyA-ezETUvJsjdcceG-3WpQK2NuXZQLGFmw",
-
-  authDomain: "tic-tac-toe-online-955d0.firebaseapp.com",
-
-  projectId: "tic-tac-toe-online-955d0",
-
-  storageBucket: "tic-tac-toe-online-955d0.firebasestorage.app",
-
-  messagingSenderId: "61466632785",
-
-  appId: "1:61466632785:web:e90047573f2c3bbf328e70",
-
-  measurementId: "G-8WECGZY7RW"
-
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_AUTH_DOMAIN",
+    projectId: "YOUR_PROJECT_ID",
+    //...etc
 };
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 

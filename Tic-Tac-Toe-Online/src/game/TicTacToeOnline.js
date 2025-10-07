@@ -1,131 +1,68 @@
-import React, { useEffect, useState } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
+import { TicTacToe } from './TicTacToe.js';
 
-// --- Local Imports ---
-import { Lobby } from './components/Lobby';
-import { Game } from './components/Game';
+export class TicTacToeOnline extends TicTacToe {
+    constructor(db, gameId, userId) {
+        super(); // Let the base class initialize first
+        this.db = db;
+        this.gameId = gameId;
+        this.userId = userId;
+        this.gameRef = doc(db, 'games', gameId);
+        this.state = null; // To hold the synchronized state from Firebase
+    }
 
-// --- Firebase Config ---
-// This configuration remains the same.
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_AUTH_DOMAIN",
-    projectId: "YOUR_PROJECT_ID",
-    //...etc
-};
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    /**
+     * Sets up a real-time listener to sync the local class state
+     * with the state from the Firestore database.
+     * @param {function} onUpdateCallback - A function to call when the state changes.
+     * @returns {Function} An unsubscribe function to stop the listener.
+     */
+    listenForUpdates(onUpdateCallback) {
+        return onSnapshot(this.gameRef, (doc) => {
+            const gameData = doc.data();
+            if (gameData) {
+                // Sync the internal state of this class instance with Firebase
+                this.state = gameData;
+                // Also update the base class properties for any internal checks
+                this.board = gameData.board;
+                this.currentPlayer = gameData.currentPlayer;
+                this.winner = gameData.winner;
+                this.isGameOver = gameData.isGameOver;
+                this.isDraw = gameData.isDraw;
+                this.size = gameData.size;
 
-
-// --- Main App Component ---
-export default function App() {
-    // State for Firebase services and user info
-    const [auth, setAuth] = useState(null);
-    const [db, setDb] = useState(null);
-    const [functions, setFunctions] = useState(null);
-    const [userId, setUserId] = useState(null);
-    
-    // State for application flow
-    const [gameId, setGameId] = useState(null);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState('');
-    const [notification, setNotification] = useState('');
-
-    // --- Firebase Initialization & Auth ---
-    useEffect(() => {
-        try {
-            const app = initializeApp(firebaseConfig);
-            const authInstance = getAuth(app);
-            const functionsInstance = getFunctions(app);
-            const dbInstance = getFirestore(app);
-            
-            setAuth(authInstance);
-            setFunctions(functionsInstance);
-            setDb(dbInstance);
-
-            onAuthStateChanged(authInstance, async (user) => {
-                if (user) {
-                    setUserId(user.uid);
-                } else if (initialAuthToken) {
-                    try { await signInWithCustomToken(authInstance, initialAuthToken); }
-                    catch (e) { await signInAnonymously(authInstance); }
-                } else {
-                    await signInAnonymously(authInstance);
+                if (onUpdateCallback) {
+                    onUpdateCallback(this);
                 }
-            });
-        } catch (err) {
-            setError('Could not initialize Firebase.');
-            console.error(err);
-        }
-    }, []);
+            }
+        });
+    }
 
-    // --- Notification timeout ---
-    useEffect(() => {
-        if(notification) {
-            const timer = setTimeout(() => setNotification(''), 3000);
-            return () => clearTimeout(timer);
-        }
-    }, [notification]);
+    /**
+     * Signals a move intent to the Firestore database.
+     * The actual game logic is handled by a secure Cloud Function.
+     * @param {number} row - The row of the move.
+     * @param {number} col - The column of the move.
+     * @returns {Promise<boolean>} True if the intent was sent, false otherwise.
+     */
+    async makeMove(row, col) {
+        if (!this.state || this.state.isGameOver) return false;
+        
+        const index = row * this.state.size + col;
+        if (this.state.board[index] !== null) return false;
 
-    // --- Cloud Function Handlers ---
-    const handleCreateGame = async () => {
-        setLoading(true);
-        setError('');
+        const moveIntent = {
+            userId: this.userId,
+            position: { row, col }
+        };
+
         try {
-            const createGameFunc = httpsCallable(functions, 'createGame');
-            const result = await createGameFunc();
-            setGameId(result.data.gameId);
-        } catch (err) { setError(err.message); }
-        setLoading(false);
-    };
-
-    const handleJoinGame = async (idToJoin) => {
-        setLoading(true);
-setError('');
-        try {
-            const joinGameFunc = httpsCallable(functions, 'joinGame');
-            await joinGameFunc({ gameId: idToJoin });
-            setGameId(idToJoin);
-        } catch (err) { setError(err.message); }
-        setLoading(false);
-    };
-    
-    const handleLeaveGame = () => {
-        setGameId(null);
-    };
-
-    return (
-        <div className="min-h-screen bg-gray-900 text-white flex flex-col justify-center items-center p-4 font-sans antialiased">
-            <div className="w-full max-w-sm bg-gray-800 rounded-2xl shadow-2xl p-6 text-center">
-                <h1 className="text-4xl font-bold text-white mb-2">Tic-Tac-Toe</h1>
-                <p className="text-gray-400 mb-6">Built with Firebase</p>
-                
-                {!userId ? <div className="text-yellow-400 animate-pulse mb-4">Connecting...</div> : (
-                    !gameId ? (
-                        <Lobby 
-                            handleCreateGame={handleCreateGame}
-                            handleJoinGame={handleJoinGame}
-                            loading={loading}
-                        />
-                    ) : (
-                        <Game
-                            db={db}
-                            functions={functions}
-                            gameId={gameId}
-                            userId={userId}
-                            setNotification={setNotification}
-                            setError={setError}
-                            handleLeaveGame={handleLeaveGame}
-                        />
-                    )
-                )}
-
-                {error && <p className="text-red-400 mt-4 text-sm bg-red-900/50 p-2 rounded-md">{error}</p>}
-                {notification && <p className="text-green-400 mt-4 text-sm bg-green-900/50 p-2 rounded-md">{notification}</p>}
-            </div>
-            <footer className="text-xs text-gray-600 mt-4">Your User ID: {userId || '...'}</footer>
-        </div>
-    );
+            await updateDoc(this.gameRef, { lastMoveIntent: moveIntent });
+            return true;
+        } catch (error) {
+            console.error("Error sending move intent:", error);
+            return false;
+        }
+    }
 }
+

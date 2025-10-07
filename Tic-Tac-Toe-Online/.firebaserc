@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "tic-tac-toe-online-955d0"
-  }
+    "default": "tic-tac-toe-online-955d0",
+    "staging": "tic-tac-toe-online-955d0"
+  },
+  "targets": {},
+  "etags": {}
 }

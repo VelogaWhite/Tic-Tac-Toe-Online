@@ -3,54 +3,62 @@ import { TicTacToe } from './TicTacToe.js';
 
 export class TicTacToeOnline extends TicTacToe {
     constructor(db, gameId, userId) {
-        super(); // Let the base class initialize first
+        // Call the parent constructor to set up the basic game engine.
+        super();
+        
         this.db = db;
         this.gameId = gameId;
         this.userId = userId;
         this.gameRef = doc(db, 'games', gameId);
-        this.state = null; // To hold the synchronized state from Firebase
     }
 
     /**
-     * Sets up a real-time listener to sync the local class state
-     * with the state from the Firestore database.
-     * @param {function} onUpdateCallback - A function to call when the state changes.
-     * @returns {Function} An unsubscribe function to stop the listener.
+     * Updates the internal state of this class instance from a Firebase data object.
+     * This method is called by the listener.
+     */
+    syncStateFromFirebase(firebaseData) {
+        if (!firebaseData) return;
+        
+        this.board = firebaseData.board;
+        this.currentPlayer = firebaseData.currentPlayer;
+        this.winner = firebaseData.winner;
+        this.isGameOver = firebaseData.isGameOver;
+        this.isDraw = firebaseData.isDraw;
+        this.size = firebaseData.size;
+        // Also sync player and status info for the UI
+        this.playerX = firebaseData.playerX;
+        this.playerO = firebaseData.playerO;
+        this.status = firebaseData.status;
+    }
+
+    /**
+     * Sets up the real-time listener.
+     * @param {function} onUpdateCallback - A function to call when the game state changes,
+     * which will trigger a UI re-render in React.
      */
     listenForUpdates(onUpdateCallback) {
-        return onSnapshot(this.gameRef, (doc) => {
+        const unsubscribe = onSnapshot(this.gameRef, (doc) => {
             const gameData = doc.data();
-            if (gameData) {
-                // Sync the internal state of this class instance with Firebase
-                this.state = gameData;
-                // Also update the base class properties for any internal checks
-                this.board = gameData.board;
-                this.currentPlayer = gameData.currentPlayer;
-                this.winner = gameData.winner;
-                this.isGameOver = gameData.isGameOver;
-                this.isDraw = gameData.isDraw;
-                this.size = gameData.size;
-
-                if (onUpdateCallback) {
-                    onUpdateCallback(this);
-                }
+            this.syncStateFromFirebase(gameData);
+            
+            if (onUpdateCallback) {
+                onUpdateCallback(this); // Pass the updated instance itself.
             }
         });
+        return unsubscribe; // Return the cleanup function.
     }
 
     /**
-     * Signals a move intent to the Firestore database.
-     * The actual game logic is handled by a secure Cloud Function.
-     * @param {number} row - The row of the move.
-     * @param {number} col - The column of the move.
-     * @returns {Promise<boolean>} True if the intent was sent, false otherwise.
+     * Sends the user's "move intent" to Firestore, letting the Cloud Function do the rest.
      */
     async makeMove(row, col) {
-        if (!this.state || this.state.isGameOver) return false;
+        // Perform a quick client-side check for immediate feedback.
+        const index = row * this.size + col;
+        if (this.isGameOver || this.board[index] !== null) {
+            console.log("Invalid move (client-side check).");
+            return false;
+        }
         
-        const index = row * this.state.size + col;
-        if (this.state.board[index] !== null) return false;
-
         const moveIntent = {
             userId: this.userId,
             position: { row, col }
@@ -60,9 +68,20 @@ export class TicTacToeOnline extends TicTacToe {
             await updateDoc(this.gameRef, { lastMoveIntent: moveIntent });
             return true;
         } catch (error) {
-            console.error("Error sending move intent:", error);
+            console.error("Error signaling move:", error);
             return false;
         }
+    }
+
+    // Override the base getState to include online-specific properties
+    getState() {
+        const baseState = super.getState();
+        return {
+            ...baseState,
+            playerX: this.playerX,
+            playerO: this.playerO,
+            status: this.status
+        };
     }
 }
 

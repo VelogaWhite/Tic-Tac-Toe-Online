@@ -2,23 +2,51 @@ import React from 'react';
 import { httpsCallable } from 'firebase/functions';
 import { TicTacToeOnline } from '../game/TicTacToeOnline';
 
+// Helper drawing functions remain the same
+function drawX(ctx, row, col, lineSpacing) {
+    ctx.strokeStyle = '#38bdf8'; // Light Blue
+    ctx.lineWidth = 8;
+    const x = col * lineSpacing;
+    const y = row * lineSpacing;
+    const padding = lineSpacing / 5;
+    ctx.beginPath();
+    ctx.moveTo(x + padding, y + padding);
+    ctx.lineTo(x + lineSpacing - padding, y + lineSpacing - padding);
+    ctx.moveTo(x + lineSpacing - padding, y + padding);
+    ctx.lineTo(x + padding, y + lineSpacing - padding);
+    ctx.stroke();
+}
+
+function drawO(ctx, row, col, lineSpacing) {
+    ctx.strokeStyle = '#fb923c'; // Orange
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    const x = col * lineSpacing + lineSpacing / 2;
+    const y = row * lineSpacing + lineSpacing / 2;
+    ctx.arc(x, y, lineSpacing / 2.5, 0, 2 * Math.PI);
+    ctx.stroke();
+}
+
 export class Game extends React.Component {
     constructor(props) {
         super(props);
-        this.state = {
-            game: null, // This will hold our TicTacToeOnline class instance
-        };
-        this.canvasRef = React.createRef();
+        this.gameInstance = null;
         this.unsubscribeListener = null;
-        this.canvasSize = 400; // Fixed canvas size
+
+        this.state = {
+            gameData: null,
+        };
+        
+        this.canvasRef = React.createRef();
+        this.canvasSize = 400;
     }
 
     componentDidMount() {
         const { db, gameId, userId } = this.props;
-        const onlineGame = new TicTacToeOnline(db, gameId, userId);
+        this.gameInstance = new TicTacToeOnline(db, gameId, userId);
 
-        this.unsubscribeListener = onlineGame.listenForUpdates((updatedGame) => {
-            this.setState({ game: { ...updatedGame } });
+        this.unsubscribeListener = this.gameInstance.listenForUpdates((updatedInstance) => {
+            this.setState({ gameData: updatedInstance.getState() });
         });
     }
 
@@ -29,74 +57,46 @@ export class Game extends React.Component {
     }
 
     componentDidUpdate(prevProps, prevState) {
-        if (this.state.game !== prevState.game && this.canvasRef.current && this.state.game?.state) {
+        if (this.state.gameData !== prevState.gameData && this.canvasRef.current) {
             this.drawCanvas();
         }
     }
 
     drawCanvas = () => {
-        const { game } = this.state;
-        if (!game || !game.state) return;
+        const { gameData } = this.state;
+        if (!gameData) return;
 
         const ctx = this.canvasRef.current.getContext('2d');
-        const { size, board } = game.state;
-        const lineSpacing = this.canvasSize / size;
+        const lineSpacing = this.canvasSize / gameData.size;
 
-        // Clear and draw grid
         ctx.clearRect(0, 0, this.canvasSize, this.canvasSize);
         ctx.strokeStyle = '#4b5563';
         ctx.lineWidth = 4;
-        for (let i = 1; i < size; i++) {
+        for (let i = 1; i < gameData.size; i++) {
             ctx.beginPath();
             ctx.moveTo(i * lineSpacing, 0); ctx.lineTo(i * lineSpacing, this.canvasSize); ctx.stroke();
             ctx.moveTo(0, i * lineSpacing); ctx.lineTo(this.canvasSize, i * lineSpacing); ctx.stroke();
         }
 
-        // Draw marks
-        board.forEach((mark, index) => {
-            const row = Math.floor(index / size);
-            const col = index % size;
-            if (mark === 'X') this.drawX(ctx, row, col, lineSpacing);
-            else if (mark === 'O') this.drawO(ctx, row, col, lineSpacing);
+        gameData.board.forEach((mark, index) => {
+            const row = Math.floor(index / gameData.size);
+            const col = index % gameData.size;
+            if (mark === 'X') drawX(ctx, row, col, lineSpacing);
+            else if (mark === 'O') drawO(ctx, row, col, lineSpacing);
         });
-    }
-    
-    drawX = (ctx, row, col, lineSpacing) => {
-        ctx.strokeStyle = '#38bdf8'; // Light Blue
-        ctx.lineWidth = 8;
-        const x = col * lineSpacing;
-        const y = row * lineSpacing;
-        const padding = lineSpacing / 5;
-        ctx.beginPath();
-        ctx.moveTo(x + padding, y + padding);
-        ctx.lineTo(x + lineSpacing - padding, y + lineSpacing - padding);
-        ctx.moveTo(x + lineSpacing - padding, y + padding);
-        ctx.lineTo(x + padding, y + lineSpacing - padding);
-        ctx.stroke();
-    }
-    
-    drawO = (ctx, row, col, lineSpacing) => {
-        ctx.strokeStyle = '#fb923c'; // Orange
-        ctx.lineWidth = 8;
-        ctx.beginPath();
-        const x = col * lineSpacing + lineSpacing / 2;
-        const y = row * lineSpacing + lineSpacing / 2;
-        ctx.arc(x, y, lineSpacing / 2.5, 0, 2 * Math.PI);
-        ctx.stroke();
     }
 
     handleCanvasClick = async (event) => {
-        const { game } = this.state;
-        if (!game || !game.state) return;
+        if (!this.gameInstance || !this.state.gameData) return;
         
-        const { size } = game.state;
         const rect = this.canvasRef.current.getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
-        const col = Math.floor(x / (this.canvasSize / size));
-        const row = Math.floor(y / (this.canvasSize / size));
+        const col = Math.floor(x / (this.canvasSize / this.state.gameData.size));
+        // ***** FIX: Corrected the typo from 'gameDatalogin' to 'gameData' *****
+        const row = Math.floor(y / (this.canvasSize / this.state.gameData.size));
         
-        await game.makeMove(row, col);
+        await this.gameInstance.makeMove(row, col);
     };
 
     handleResetGame = async () => {
@@ -111,23 +111,23 @@ export class Game extends React.Component {
     };
 
     render() {
-        const { game } = this.state;
+        const { gameData } = this.state;
         const { gameId, userId, setNotification, handleLeaveGame } = this.props;
 
-        if (!game || !game.state) {
+        if (!gameData) {
             return <div className="text-sky-400 animate-pulse my-8">Loading Game...</div>;
         }
 
-        const { status, playerX, playerO, currentPlayer, winner, isDraw } = game.state;
+        const { status, playerX, playerO, currentPlayer, winner } = gameData;
         const isHost = playerX === userId;
-        const myMark = (playerX === userId) ? 'X' : (playerO === userId) ? 'O' : null;
-        const isMyTurn = myMark === currentPlayer;
+        const isMyTurn = (currentPlayer === 'X' && playerX === userId) || (currentPlayer === 'O' && playerO === userId);
+        const myMark = isHost ? 'X' : 'O';
 
         const getStatusMessage = () => {
             if (status === 'waiting') return 'Waiting for an opponent...';
             if (status === 'finished') {
-                if (winner) return winner === myMark ? "🎉 You Win! 🎉" : "😢 Opponent Wins! 😢";
-                if (isDraw) return "🤝 It's a Draw! 🤝";
+                if (winner && winner !== 'draw') return winner === myMark ? "🎉 You Win! 🎉" : "😢 Opponent Wins! 😢";
+                return "🤝 It's a Draw! 🤝";
             }
             if (status === 'active') return isMyTurn ? `Your Turn (${myMark})` : `Opponent's Turn (${currentPlayer})`;
             return '';

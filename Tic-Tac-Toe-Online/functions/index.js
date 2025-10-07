@@ -10,8 +10,6 @@ const db = admin.firestore();
  * Creates a new game document in Firestore.
  */
 exports.createGame = onCall(async (request) => {
-    // SECURE: Get the user's ID from the authentication context.
-    // This is the correct and secure way to get the user ID.
     if (!request.auth) {
         throw new HttpsError('unauthenticated', 'You must be logged in to create a game.');
     }
@@ -23,7 +21,7 @@ exports.createGame = onCall(async (request) => {
 
     const gameRef = await db.collection("games").add({
         ...initialGameState,
-        playerX: userId, // Use the secure userId from the context.
+        playerX: userId,
         playerO: null,
         status: "waiting",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -71,7 +69,8 @@ exports.processMove = onDocumentUpdated("games/{gameId}", async (event) => {
     const beforeState = event.data.before.data();
     const afterState = event.data.after.data();
     
-    if (!afterState.lastMoveIntent || (beforeState.lastMoveIntent && afterState.lastMoveIntent.userId === beforeState.lastMoveIntent.userId && afterState.lastMoveIntent.position.row === beforeState.lastMoveIntent.position.row)) {
+    // Improved check: Only proceed if a new move intent has been submitted.
+    if (!afterState.lastMoveIntent || JSON.stringify(beforeState.lastMoveIntent) === JSON.stringify(afterState.lastMoveIntent)) {
         return null;
     }
     
@@ -82,8 +81,13 @@ exports.processMove = onDocumentUpdated("games/{gameId}", async (event) => {
     const expectedPlayerMark = beforeState.currentPlayer;
     const expectedPlayerId = (expectedPlayerMark === 'X') ? beforeState.playerX : beforeState.playerO;
 
+    // --- DEBUG LOGGING ---
+    console.log(`[GAME ${gameId}] Move received from User: ${userId}`);
+    console.log(`[GAME ${gameId}] Expected Player ID: ${expectedPlayerId} (Player ${expectedPlayerMark})`);
+
     if (beforeState.isGameOver || userId !== expectedPlayerId) {
-        console.log(`Invalid move attempt by ${userId} in game ${gameId}.`);
+        console.error(`[GAME ${gameId}] INVALID MOVE! Reason: isGameOver=${beforeState.isGameOver}, userIdMatch=${userId === expectedPlayerId}. Rejecting move.`);
+        // Revert the intent to prevent re-triggering, but the move fails.
         return gameRef.update({ lastMoveIntent: beforeState.lastMoveIntent || null });
     }
 
@@ -91,6 +95,14 @@ exports.processMove = onDocumentUpdated("games/{gameId}", async (event) => {
     game.board = beforeState.board;
     game.currentPlayer = beforeState.currentPlayer;
 
+    // Check if the cell is already taken (server-side)
+    const index = position.row * game.size + position.col;
+    if (game.board[index] !== null) {
+        console.error(`[GAME ${gameId}] INVALID MOVE! Reason: Cell (${position.row}, ${position.col}) is already taken. Rejecting move.`);
+        return gameRef.update({ lastMoveIntent: beforeState.lastMoveIntent || null });
+    }
+
+    console.log(`[GAME ${gameId}] Move is valid. Processing...`);
     game.makeMove(position.row, position.col);
 
     const newAuthoritativeState = game.getState();
@@ -133,5 +145,4 @@ exports.resetGame = onCall(async (request) => {
         status: "active"
     });
 });
-
 
